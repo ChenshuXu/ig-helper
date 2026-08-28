@@ -11,6 +11,7 @@ import { getBlobMedia } from "../utils/api";
 import { _i18n } from "../utils/i18n";
 import { openImageViewer } from "../utils/image_viewer";
 import { IG_createDM, IG_setDM } from "../utils/dialog";
+import { getImageFromCache, mediaIdFromURL } from "../utils/image_cache";
 /*! ESLINT IMPORT END !*/
 
 /**
@@ -497,7 +498,8 @@ export function registerPostClickHandlers() {
             const totalInserted = await createMediaListDOM(
                 state.GL_postPath,
                 ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                ""
+                "",
+                $article
             );
 
             if (!totalInserted || totalInserted < 1) {
@@ -548,7 +550,8 @@ export function registerPostClickHandlers() {
             const totalInserted = await createMediaListDOM(
                 state.GL_postPath,
                 ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                ""
+                "",
+                $article
             );
 
             if (!totalInserted || totalInserted < 1) {
@@ -604,7 +607,8 @@ export function registerPostClickHandlers() {
             const totalInserted = await createMediaListDOM(
                 state.GL_postPath,
                 ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                _i18n("LOAD_BLOB_MULTIPLE")
+                _i18n("LOAD_BLOB_MULTIPLE"),
+                $article
             );
 
             if (!totalInserted || totalInserted < 1) {
@@ -651,7 +655,8 @@ export function registerPostClickHandlers() {
                     const totalInserted = await createMediaListDOM(
                         state.GL_postPath,
                         ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                        ""
+                        "",
+                        $article
                     );
 
                     if (!totalInserted || totalInserted < 1) {
@@ -706,7 +711,8 @@ export function registerPostClickHandlers() {
                         await createMediaListDOM(
                             state.GL_postPath,
                             ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                            _i18n("LOAD_BLOB_MULTIPLE")
+                            _i18n("LOAD_BLOB_MULTIPLE"),
+                            $article
                         );
                     }
                     else {
@@ -730,7 +736,8 @@ export function registerPostClickHandlers() {
                             await createMediaListDOM(
                                 state.GL_postPath,
                                 ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                                _i18n("LOAD_BLOB_RELOAD")
+                                _i18n("LOAD_BLOB_RELOAD"),
+                                $article
                             );
                         }
                     }
@@ -740,7 +747,8 @@ export function registerPostClickHandlers() {
                         await createMediaListDOM(
                             state.GL_postPath,
                             ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                            _i18n("LOAD_BLOB_MULTIPLE")
+                            _i18n("LOAD_BLOB_MULTIPLE"),
+                            $article
                         );
                     }
                     else {
@@ -753,7 +761,8 @@ export function registerPostClickHandlers() {
                             await createMediaListDOM(
                                 state.GL_postPath,
                                 ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                                _i18n("LOAD_BLOB_ONE")
+                                _i18n("LOAD_BLOB_ONE"),
+                                $article
                             );
                         }
                         if (element_images && imgLink) {
@@ -782,7 +791,8 @@ export function registerPostClickHandlers() {
                 const totalInserted = await createMediaListDOM(
                     state.GL_postPath,
                     ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                    _i18n("LOAD_BLOB_MULTIPLE")
+                    _i18n("LOAD_BLOB_MULTIPLE"),
+                    $article
                 );
 
                 if (!totalInserted || totalInserted < 1) {
@@ -828,6 +838,96 @@ export function filterResourceData(data) {
     return resource;
 }
 
+const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+function needsOriginalImage(media) {
+    if (media.video_versions != null) return false;
+    const candidate = (media.image_versions2?.candidates || []).reduce((best, item) => {
+        const area = Number(item.width || 0) * Number(item.height || 0);
+        const bestArea = Number(best?.width || 0) * Number(best?.height || 0);
+        return area > bestArea ? item : best;
+    }, null);
+    return Number(media.original_width) * Number(media.original_height) >
+        Number(candidate?.width) * Number(candidate?.height);
+}
+
+function livePostRoot($article) {
+    if ($article?.get(0)?.isConnected) return $article;
+    const $main = $('main').first();
+    return $main.length > 0 ? $main : $('body');
+}
+
+function currentCarouselIndex($article, mediaLength) {
+    const urlIndex = Number(new URL(location.href).searchParams.get('img_index'));
+    if (urlIndex >= 1 && urlIndex <= mediaLength) return urlIndex - 1;
+    return getVisibleNodeIndex(livePostRoot($article));
+}
+
+function collectOriginalImages($article, targets, originals) {
+    livePostRoot($article).find('img').each(function () {
+        const url = this.currentSrc || this.src;
+        const media = targets.get(mediaIdFromURL(url));
+        if (!media || originals.has(String(media.pk))) return;
+        if (this.naturalWidth >= Number(media.original_width) &&
+            this.naturalHeight >= Number(media.original_height)) {
+            originals.set(String(media.pk), url);
+        }
+    });
+}
+
+async function waitForCarouselSlide($article, media, targets, originals, expectedIndex) {
+    for (let attempt = 0; attempt < 60; attempt++) {
+        await wait(100);
+        collectOriginalImages($article, targets, originals);
+        const item = media[expectedIndex];
+        if (currentCarouselIndex($article, media.length) === expectedIndex &&
+            (!needsOriginalImage(item) || originals.has(String(item.pk)))) return true;
+    }
+    return false;
+}
+
+async function collectOriginalCarouselImages($article, media) {
+    const targets = new Map(media
+        .filter(item => item.video_versions == null && item.pk != null)
+        .map(item => [String(item.pk), item]));
+    const originals = new Map();
+
+    for (const mediaId of targets.keys()) {
+        const cached = getImageFromCache(mediaId);
+        if (cached) originals.set(mediaId, cached);
+    }
+    collectOriginalImages($article, targets, originals);
+
+    const missingOriginals = () => media.filter(item =>
+        needsOriginalImage(item) && !originals.has(String(item.pk))
+    );
+    if (missingOriginals().length === 0) return originals;
+
+    const start = currentCarouselIndex($article, media.length);
+    const move = async (selector, index) => {
+        let button;
+        for (let attempt = 0; attempt < 20 && !button; attempt++) {
+            button = livePostRoot($article).find(selector).filter(':visible').first().get(0);
+            if (!button) await wait(100);
+        }
+        if (!button) return false;
+        button.click();
+        return waitForCarouselSlide($article, media, targets, originals, index);
+    };
+
+    let index = start;
+    while (index > 0 && await move('button._afxv._al46._al47', index - 1)) index--;
+    while (index < media.length - 1 && await move('button._afxw._al46._al47', index + 1)) index++;
+    while (index > start && await move('button._afxv._al46._al47', index - 1)) index--;
+    while (index < start && await move('button._afxw._al46._al47', index + 1)) index++;
+
+    const missing = missingOriginals();
+    if (missing.length > 0) {
+        throw new Error(`Original image resources unavailable (${missing.length})`);
+    }
+    return originals;
+}
+
 
 /**
  * createMediaListDOM
@@ -836,9 +936,10 @@ export function filterResourceData(data) {
  * @param  {String}  postURL
  * @param  {String}  selector - Use CSS element selectors to choose where it appears.
  * @param  {String}  message - i18n display loading message
+ * @param  {JQuery<HTMLElement>}  $article - Current post container
  * @return {Promise<number>}  The number of <a> elements inserted into the DOM
  */
-export async function createMediaListDOM(postURL, selector, message) {
+export async function createMediaListDOM(postURL, selector, message, $article) {
     try {
         // OPTIMIZATION: cache the popup body selection used many times below
         const $target = $(selector);
@@ -847,6 +948,10 @@ export async function createMediaListDOM(postURL, selector, message) {
         $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', true);
         let result = await getBlobMedia(postURL);
         let resource = filterResourceData(result.data);
+        const originalImages = await collectOriginalCarouselImages(
+            $article,
+            resource.carousel_media?.length ? resource.carousel_media : [resource]
+        );
 
         if (result.type === 'query_hash') {
             let idx = 1;
@@ -906,7 +1011,8 @@ export async function createMediaListDOM(postURL, selector, message) {
                             return 0;
                         });
 
-                        $target.append(`<a media-id="${mda.pk}" datetime="${mda.taken_at}" data-blob="true" data-needed="direct" data-path="${resource.code}" data-name="photo" data-type="jpg" data-username="${resource.owner.username}" data-globalIndex="${idx}" href="javascript:;" data-href="${mda.image_versions2.candidates[0].url}"><img width="100" src="${mda.image_versions2.candidates[0].url}" /><br/>- <span data-ih-locale="IMG">${_i18n("IMG")}</span> ${idx} -</a>`);
+                        const imageUrl = originalImages.get(String(mda.pk)) || mda.image_versions2.candidates[0].url;
+                        $target.append(`<a media-id="${mda.pk}" datetime="${mda.taken_at}" data-blob="true" data-needed="direct" data-path="${resource.code}" data-name="photo" data-type="jpg" data-username="${resource.owner.username}" data-globalIndex="${idx}" href="javascript:;" data-href="${imageUrl}"><img width="100" src="${mda.image_versions2.candidates[0].url}" /><br/>- <span data-ih-locale="IMG">${_i18n("IMG")}</span> ${idx} -</a>`);
                     }
                     // Video
                     else {
@@ -937,7 +1043,8 @@ export async function createMediaListDOM(postURL, selector, message) {
                         return 0;
                     });
 
-                    $target.append(`<a media-id="${resource.pk}" datetime="${resource.taken_at}" data-blob="true" data-needed="direct" data-path="${resource.code}" data-name="photo" data-type="jpg" data-username="${resource.owner.username}" data-globalIndex="${idx}" href="javascript:;" data-href="${resource.image_versions2.candidates[0].url}"><img width="100" src="${resource.image_versions2.candidates[0].url}" /><br/>- <span data-ih-locale="IMG">${_i18n("IMG")}</span> ${idx} -</a>`);
+                    const imageUrl = originalImages.get(String(resource.pk)) || resource.image_versions2.candidates[0].url;
+                    $target.append(`<a media-id="${resource.pk}" datetime="${resource.taken_at}" data-blob="true" data-needed="direct" data-path="${resource.code}" data-name="photo" data-type="jpg" data-username="${resource.owner.username}" data-globalIndex="${idx}" href="javascript:;" data-href="${imageUrl}"><img width="100" src="${resource.image_versions2.candidates[0].url}" /><br/>- <span data-ih-locale="IMG">${_i18n("IMG")}</span> ${idx} -</a>`);
                 }
                 // Video
                 else {
@@ -967,8 +1074,14 @@ export async function createMediaListDOM(postURL, selector, message) {
     }
     catch (err) {
         logger('createMediaListDOM', err);
-        $("#_SNLOAD").remove();
-        $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', false);
+        const originalsUnavailable = Boolean(err?.message?.startsWith('Original image resources unavailable'));
+        if (originalsUnavailable) {
+            $("#_SNLOAD").text(err.message);
+        }
+        else {
+            $("#_SNLOAD").remove();
+        }
+        $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', originalsUnavailable);
         return 0;
     }
 }
