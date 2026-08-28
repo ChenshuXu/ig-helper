@@ -690,8 +690,7 @@ export function registerPostClickHandlers() {
             if (!USER_SETTING.DIRECT_DOWNLOAD_ALL) {
                 let s = 0;
                 const $resourceItems = $article.find(resourceCountSelector);
-                let multiple = $resourceItems.length;
-                let blob = USER_SETTING.FORCE_FETCH_ALL_RESOURCES;
+                const multiple = $resourceItems.length || USER_SETTING.FORCE_FETCH_ALL_RESOURCES;
                 const publish_time = new Date(
                     $article.find('a[href] time[datetime]').filter(function () {
                         let href = $(this).parents("a[href]").attr("href");
@@ -700,47 +699,12 @@ export function registerPostClickHandlers() {
                 ).getTime();
 
                 if (multiple) {
-                    $resourceItems.each(function () {
-                        let element_videos = $(this).parent().parent().parent().find('video');
-                        if (element_videos && element_videos.attr('src')) {
-                            blob = true;
-                        }
-                    });
-
-                    if (blob || USER_SETTING.FORCE_RESOURCE_VIA_MEDIA) {
-                        await createMediaListDOM(
-                            state.GL_postPath,
-                            ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                            _i18n("LOAD_BLOB_MULTIPLE"),
-                            $article
-                        );
-                    }
-                    else {
-                        const $popupBody = $('.IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY');
-                        $resourceItems.each(function () {
-                            s++;
-                            const $this = $(this);
-                            let element_videos = $this.find('video');
-                            let element_images = $this.find('._aagv img');
-                            let imgLink = (element_images.attr('srcset')) ? element_images.attr('srcset').split(" ")[0] : element_images.attr('src');
-
-                            if (element_videos && element_videos.attr('src')) {
-                                blob = true;
-                            }
-                            if (element_images && imgLink) {
-                                $popupBody.append(`<a datetime="${publish_time}" data-needed="direct" data-path="${state.GL_postPath}" data-name="photo" data-type="jpg" data-username="${state.GL_username || ''}" data-globalIndex="${s}" href="javascript:;" data-href="${imgLink}"><img width="100" src="${imgLink}" /><br/>- <span data-ih-locale="IMG">${_i18n("IMG")}</span> ${s} -</a>`);
-                            }
-                        });
-
-                        if (blob) {
-                            await createMediaListDOM(
-                                state.GL_postPath,
-                                ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
-                                _i18n("LOAD_BLOB_RELOAD"),
-                                $article
-                            );
-                        }
-                    }
+                    await createMediaListDOM(
+                        state.GL_postPath,
+                        ".IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY",
+                        _i18n("LOAD_BLOB_MULTIPLE"),
+                        $article
+                    );
                 }
                 else {
                     if (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA) {
