@@ -1038,14 +1038,10 @@ export async function createMediaListDOM(postURL, selector, message, $article) {
     }
     catch (err) {
         logger('createMediaListDOM', err);
-        const originalsUnavailable = Boolean(err?.message?.startsWith('Original image resources unavailable'));
-        if (originalsUnavailable) {
-            $("#_SNLOAD").text(err.message);
-        }
-        else {
-            $("#_SNLOAD").remove();
-        }
-        $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', originalsUnavailable);
+        const $target = $(selector);
+        $target.find('a').remove();
+        $target.find('#_SNLOAD').text(err?.message || 'Unable to load post media. Please try again later.');
+        $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', true);
         return 0;
     }
 }

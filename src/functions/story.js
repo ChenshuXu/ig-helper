@@ -8,7 +8,7 @@ import {
     setStoryProgressIndexText,
     setStoryProgressIndexByUsername
 } from "../utils/general";
-import { getUserId, getStories, getMediaInfo } from "../utils/api";
+import { getUserId, getStories, getMediaInfo, getPageStoryReel } from "../utils/api";
 import { _i18n } from "../utils/i18n";
 import { getImageFromCache } from "../utils/image_cache";
 import { IG_createDM } from "../utils/dialog";
@@ -207,7 +207,7 @@ export async function onStory(isDownload, isForce, isPreview) {
         let timestamp = Math.floor(date / 1000);
 
         updateLoadingBar(true);
-        if (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit) {
+        if (getPageStoryReel(username) || (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit)) {
             let mediaId = null;
 
             let userInfo = await getUserId(username);
@@ -282,7 +282,8 @@ export async function onStory(isDownload, isForce, isPreview) {
                 }
             }
 
-            let result = await getMediaInfo(mediaId);
+            const loadedItem = items.find(item => item.id === mediaId && item.image_versions2);
+            let result = loadedItem ? { status: 'ok', items: [loadedItem] } : await getMediaInfo(mediaId);
 
             if (USER_SETTING.RENAME_PUBLISH_DATE) {
                 timestamp = result.items[0].taken_at;
@@ -679,7 +680,7 @@ export async function onStoryThumbnail(isDownload, isForce) {
 
         updateLoadingBar(true);
 
-        if (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit) {
+        if (getPageStoryReel(username) || (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit)) {
             let userInfo = await getUserId(username);
             let userId = userInfo.user.pk;
             let stories = await getStories(userId);
@@ -746,7 +747,8 @@ export async function onStoryThumbnail(isDownload, isForce) {
                 }
             }
 
-            let result = await getMediaInfo(mediaId);
+            const loadedItem = items.find(item => item.id === mediaId && item.image_versions2);
+            let result = loadedItem ? { status: 'ok', items: [loadedItem] } : await getMediaInfo(mediaId);
 
             if (USER_SETTING.RENAME_PUBLISH_DATE) {
                 timestamp = result.items[0].taken_at;

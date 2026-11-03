@@ -1295,7 +1295,7 @@ export function checkingScriptUpdate(interval) {
  */
 export function callNotification() {
     const currentVersion = GM_info.script.version;
-    const remoteScriptURL = 'https://raw.githubusercontent.com/SN-Koarashi/ig-helper/refs/heads/master/main.js';
+    const remoteScriptURL = 'https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.meta.js';
 
     GM_xmlhttpRequest({
         method: "GET",
@@ -1319,10 +1319,7 @@ export function callNotification() {
                         image: "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://www.instagram.com&size=64",
                         onclick: (event) => {
                             event?.preventDefault();
-                            var w = GM_openInTab(GM_info.script.downloadURL);
-                            setTimeout(() => {
-                                w.close();
-                            }, 250);
+                            GM_openInTab(GM_info.script.downloadURL, { active: true });
                         }
                     });
                 } else {

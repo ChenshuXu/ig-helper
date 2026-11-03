@@ -71,8 +71,12 @@ const processLines = async () => {
 };
 
 processLines().then(() => {
-    outputStream.end();
-    console.log("File concat done.");
+    outputStream.end(() => {
+        fs.copyFileSync(outputFilePath, path.join(__dirname, 'ig-helper.user.js'));
+        fs.copyFileSync(path.join(inputRootPath, 'metadata.js'), path.join(__dirname, 'ig-helper.meta.js'));
+        console.log("Built main.js, ig-helper.user.js and ig-helper.meta.js.");
+    });
 }).catch(err => {
     console.error("Error processing lines:", err);
+    process.exitCode = 1;
 });

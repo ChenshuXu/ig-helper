@@ -17,7 +17,10 @@
 // @name:zh-CN         IG小助手
 // @name:zh-TW         IG小精靈
 // @namespace          https://github.snkms.com/
-// @version            4.2.1
+// @version            4.2.1.3
+// @homepageURL        https://github.com/ChenshuXu/ig-helper
+// @updateURL          https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.meta.js
+// @downloadURL        https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.user.js
 // @description        Download photos and videos from Instagram posts in one click, including Stories, Reels, and profile pictures.
 // @description:ar     نزّل صورًا ومقاطع فيديو من منشورات Instagram بنقرة واحدة، بما في ذلك القصص وReels وصور الملف الشخصي.
 // @description:de     Lade Fotos und Videos aus Instagram-Beiträgen mit einem Klick herunter, einschließlich Stories, Reels und Profilbildern.
@@ -53,9 +56,9 @@
 // @connect            raw.githubusercontent.com
 // @require            https://cdn.jsdelivr.net/npm/mediabunny@1.34.5/dist/bundles/mediabunny.min.cjs#sha256-wUFR+x2bDvpqgMAVGy2CvGvULyjTGvGy4UUAm8rae5U=
 // @require            https://code.jquery.com/jquery-4.0.0.min.js#sha256-OaVG6prZf4v69dPg6PhVattBXkcOWQB62pdZ3ORyrao=
-// @resource           INTERNAL_CSS https://cdn.jsdelivr.net/gh/SN-Koarashi/ig-helper@master/style.css
-// @resource           LOCALE_MANIFEST https://cdn.jsdelivr.net/gh/SN-Koarashi/ig-helper@master/locale/manifest.json
-// @supportURL         https://github.com/SN-Koarashi/ig-helper/
+// @resource           INTERNAL_CSS https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/style.css
+// @resource           LOCALE_MANIFEST https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/locale/manifest.json
+// @supportURL         https://github.com/ChenshuXu/ig-helper/
 // @contributionURL    https://ko-fi.com/snkoarashi
 // @icon               https://www.google.com/s2/favicons?domain=www.instagram.com&sz=32
 // @compatible         chrome >= 100
@@ -1968,14 +1971,10 @@
         }
         catch (err) {
             logger('createMediaListDOM', err);
-            const originalsUnavailable = Boolean(err?.message?.startsWith('Original image resources unavailable'));
-            if (originalsUnavailable) {
-                $("#_SNLOAD").text(err.message);
-            }
-            else {
-                $("#_SNLOAD").remove();
-            }
-            $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', originalsUnavailable);
+            const $target = $(selector);
+            $target.find('a').remove();
+            $target.find('#_SNLOAD').text(err?.message || 'Unable to load post media. Please try again later.');
+            $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', true);
             return 0;
         }
     }
@@ -2784,7 +2783,7 @@
             let timestamp = Math.floor(date / 1000);
 
             updateLoadingBar(true);
-            if (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit) {
+            if (getPageStoryReel(username) || (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit)) {
                 let mediaId = null;
 
                 let userInfo = await getUserId(username);
@@ -2859,7 +2858,8 @@
                     }
                 }
 
-                let result = await getMediaInfo(mediaId);
+                const loadedItem = items.find(item => item.id === mediaId && item.image_versions2);
+                let result = loadedItem ? { status: 'ok', items: [loadedItem] } : await getMediaInfo(mediaId);
 
                 if (USER_SETTING.RENAME_PUBLISH_DATE) {
                     timestamp = result.items[0].taken_at;
@@ -3256,7 +3256,7 @@
 
             updateLoadingBar(true);
 
-            if (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit) {
+            if (getPageStoryReel(username) || (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && !state.tempFetchRateLimit)) {
                 let userInfo = await getUserId(username);
                 let userId = userInfo.user.pk;
                 let stories = await getStories(userId);
@@ -3323,7 +3323,8 @@
                     }
                 }
 
-                let result = await getMediaInfo(mediaId);
+                const loadedItem = items.find(item => item.id === mediaId && item.image_versions2);
+                let result = loadedItem ? { status: 'ok', items: [loadedItem] } : await getMediaInfo(mediaId);
 
                 if (USER_SETTING.RENAME_PUBLISH_DATE) {
                     timestamp = result.items[0].taken_at;
@@ -3594,6 +3595,91 @@
         });
     }
 
+    function getPageStoryReel(identifier) {
+        const matches = reel => /^\d+$/.test(String(reel.id)) && (
+            String(reel.id) === String(identifier) ||
+            reel.user?.username?.toLowerCase() === String(identifier).toLowerCase()
+        );
+        function findReel(value) {
+            if (!value || typeof value !== 'object') return null;
+            if (Array.isArray(value.reels_media)) {
+                const reel = value.reels_media.find(matches);
+                if (reel) return reel;
+            }
+            for (const child of Object.values(value)) {
+                const reel = findReel(child);
+                if (reel) return reel;
+            }
+            return null;
+        }
+
+        let reel = null;
+        // Read the live Relay store so navigation between Stories needs no API request.
+        const anchor = document.querySelector('section a[href]');
+        let fiber = anchor?.[Object.keys(anchor).find(key => key.startsWith('__reactFiber'))];
+        while (fiber) {
+            const environment = fiber.memoizedProps?.value?.environment;
+            if (typeof environment?.getStore === 'function') {
+                const source = environment.getStore().getSource();
+                const read = link => link?.__ref ? source.get(link.__ref) : null;
+                const readList = link => (link?.__refs || []).map(id => source.get(id)).filter(Boolean);
+                for (const id of source.getRecordIDs()) {
+                    if (!id.startsWith('XDTReelDict:')) continue;
+                    const record = source.get(id);
+                    const user = read(record?.user);
+                    if (!record || !matches({ ...record, user })) continue;
+                    const items = readList(record.items).map(item => {
+                        const images = read(item.image_versions2);
+                        return {
+                            ...item,
+                            image_versions2: { candidates: readList(images?.candidates) },
+                            video_versions: item.video_versions ? readList(item.video_versions) : null
+                        };
+                    });
+                    if (items.length && items.every(item => item.image_versions2.candidates.length &&
+                        (item.media_type !== 2 || item.video_versions?.length))) {
+                        reel = { ...record, user, items };
+                    }
+                    break;
+                }
+                break;
+            }
+            fiber = fiber.return;
+        }
+
+        // Server-rendered pages also carry the original, unnormalized Story response.
+        if (!reel) for (const script of document.querySelectorAll('script[type="application/json"]')) {
+            if (!script.textContent.includes('reels_media')) continue;
+            let data;
+            try {
+                data = JSON.parse(script.textContent);
+            } catch (err) {
+                logger('getPageStoryReel()', 'invalid page JSON', err.message);
+                continue;
+            }
+            reel = findReel(data);
+            if (reel && Array.isArray(reel.items)) break;
+            reel = null;
+        }
+        if (!reel) return null;
+        const items = reel.items.map(item => {
+            const images = [...(item.image_versions2?.candidates || [])]
+                .sort((a, b) => b.width - a.width);
+            const videos = [...(item.video_versions || [])]
+                .sort((a, b) => b.width - a.width);
+            return {
+                ...item,
+                id: String(item.pk ?? item.id.split('_')[0]),
+                is_video: item.media_type === 2,
+                taken_at_timestamp: item.taken_at,
+                display_url: images[0]?.url,
+                display_resources: images.map(image => ({ src: image.url, config_width: image.width })),
+                video_resources: videos.map(video => ({ src: video.url, config_width: video.width }))
+            };
+        });
+        return { ...reel, items };
+    }
+
     /**
      * getHighlightStories
      * @description Get a list of all stories in highlight Id.
@@ -3634,6 +3720,8 @@
      * @return {Object}
      */
     function getStories(userId) {
+        const reel = getPageStoryReel(userId);
+        if (reel) return Promise.resolve({ data: { reels_media: [reel] } });
         return new Promise((resolve, reject) => {
             const getURL = `https://www.instagram.com/graphql/query/?query_hash=15463e8449a83d3d60b06be7e90627c7&variables=%7B%22reel_ids%22:%5B%22${userId}%22%5D,%22precomposed_overlay%22:false%7D`;
 
@@ -3667,6 +3755,8 @@
      * @return {Promise<Integer>}
      */
     function getUserId(username) {
+        const reel = getPageStoryReel(username);
+        if (reel?.user) return Promise.resolve({ user: { ...reel.user, pk: reel.id } });
         return new Promise((resolve, reject) => {
             if (userIdCache.has(username)) {
                 logger('getUserId()', 'return from cache:', userIdCache.get(username));
@@ -3845,6 +3935,105 @@
         });
     }
 
+    // Read media already fetched by Instagram instead of issuing another GraphQL request.
+    function getPagePostMedia(shortcode) {
+        const normalize = post => {
+            if (post?.code !== shortcode || !post.user?.username) return null;
+            const media = post.media_type === 8 ? post.carousel_media : [post];
+            if (!Array.isArray(media) || !media.length ||
+                (post.media_type === 8 && (!post.carousel_media_count || media.length !== post.carousel_media_count))) return null;
+            if (!media.every(item => item?.pk && item.image_versions2?.candidates?.some(image => image?.url) &&
+                (item.media_type === 1 || (item.media_type === 2 && item.video_versions?.some(video => video?.url))))) return null;
+            const normalizeItem = item => ({
+                ...item,
+                taken_at: item.taken_at ?? post.taken_at,
+                image_versions2: { candidates: item.image_versions2.candidates.filter(image => image?.url).map(image => ({ ...image })) },
+                video_versions: item.media_type === 2 ? item.video_versions.filter(video => video?.url)
+                    .map(video => ({ ...video })).sort((a, b) => b.width - a.width) : null
+            });
+            return {
+                ...post,
+                user: { ...post.user },
+                owner: { ...post.user },
+                ...(post.media_type === 8 ? { carousel_media: media.map(normalizeItem) } : normalizeItem(post))
+            };
+        };
+
+        const anchors = document.querySelectorAll(`a[href*="/${shortcode}/"], section a[href], main a[href]`);
+        const environments = new Set();
+        for (const anchor of anchors) {
+            let fiber = anchor[Object.keys(anchor).find(key => key.startsWith('__reactFiber'))];
+            while (fiber) {
+                const environment = fiber.memoizedProps?.value?.environment;
+                if (typeof environment?.getStore === 'function' && !environments.has(environment)) {
+                    environments.add(environment);
+                    const source = environment.getStore().getSource();
+                    const read = link => link?.__ref ? source.get(link.__ref) : null;
+                    const readList = link => (link?.__refs || []).map(id => source.get(id));
+                    const expand = record => {
+                        if (!record) return null;
+                        const images = read(record.image_versions2);
+                        return {
+                            ...record,
+                            image_versions2: { candidates: readList(images?.candidates) },
+                            video_versions: record.video_versions ? readList(record.video_versions) : null
+                        };
+                    };
+                    for (const id of source.getRecordIDs()) {
+                        const record = source.get(id);
+                        if (record?.code !== shortcode) continue;
+                        const post = normalize({
+                            ...expand(record),
+                            user: read(record.user),
+                            carousel_media: record.carousel_media ? readList(record.carousel_media).map(expand) : null
+                        });
+                        if (post) return post;
+                    }
+                }
+                fiber = fiber.return;
+            }
+        }
+
+        // Full page loads may also include an unnormalized response in embedded JSON.
+        const findPost = value => {
+            if (!value || typeof value !== 'object') return null;
+            const post = normalize(value);
+            if (post) return post;
+            for (const child of Object.values(value)) {
+                const found = findPost(child);
+                if (found) return found;
+            }
+            return null;
+        };
+        for (const script of document.querySelectorAll('script[type="application/json"]')) {
+            if (!script.textContent.includes(shortcode)) continue;
+            let data;
+            try {
+                data = JSON.parse(script.textContent);
+            } catch (err) {
+                logger('getPagePostMedia()', 'invalid page JSON', err.message);
+                continue;
+            }
+            const post = findPost(data);
+            if (post) return post;
+        }
+        return null;
+    }
+
+    let postRequestsLimited = false;
+
+    function postRequestError(response, body) {
+        const limited = response.status === 429 || body?.feedback_required === true ||
+            ['feedback_required', 'rate_limit_error', 'sentry_block'].includes(body?.message);
+        const error = new Error(limited ?
+            'Instagram has temporarily limited media requests. Extra requests are paused for this page; already loaded posts can still be downloaded.' :
+            `Unable to load post media: ${body?.message || `HTTP ${response.status}`}`);
+        error.code = limited ? 'POST_RATE_LIMITED' : 'POST_REQUEST_FAILED';
+        if (limited) postRequestsLimited = true;
+        return error;
+    }
+
+
     /**
      * getBlobMedia
      * @description Get list of all media files in post with post shortcode.
@@ -3853,8 +4042,11 @@
      * @return {Object}
      */
     function getBlobMedia(postPath) {
+        if (!postPath || !/^[\w-]+$/.test(postPath)) return Promise.reject(new Error('Invalid post shortcode.'));
+        const post = getPagePostMedia(postPath);
+        if (post) return Promise.resolve({ type: 'page', data: post });
+        if (postRequestsLimited) return Promise.reject(postRequestError({ status: 429 }));
         return new Promise((resolve, reject) => {
-            if (!postPath) reject("NOPATH");
             const postShortCode = postPath;
             const getURL = `https://www.instagram.com/graphql/query/?query_hash=2c4c2e343a8f64c625ba02b2aa12c7f8&variables=%7B%22shortcode%22:%22${postShortCode}%22}`;
 
@@ -3864,21 +4056,30 @@
                 headers: {
                     "User-Agent": "Mozilla/5.0 (Linux; Android 10; Pixel 7 XL)Build/RP1A.20845.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/5.0 Chrome/117.0.5938.60 Mobile Safari/537.36 Instagram 307.0.0.34.111"
                 },
+                timeout: 20000,
+                ontimeout: () => reject(new Error('Post media request timed out. Please try again later.')),
                 onload: function (response) {
                     try {
+                        if (response.status === 429) throw postRequestError(response);
                         let obj = JSON.parse(response.response);
-                        logger(obj);
+                        if (response.status === 429 || obj.feedback_required ||
+                            ['feedback_required', 'rate_limit_error', 'sentry_block'].includes(obj.message)) {
+                            reject(postRequestError(response, obj));
+                            return;
+                        }
 
                         if (obj.status === 'fail') {
-                            // alert(`Request failed with API response:\n${obj.message}: ${obj.feedback_message}`);
                             logger('Request with:', 'getBlobMediaWithQuery()', postShortCode);
                             getBlobMediaWithQueryID(postShortCode).then((res) => {
-                                resolve({ type: 'query_id', data: res.xdt_api__v1__media__shortcode__web_info.items[0] });
+                                const media = res?.xdt_api__v1__media__shortcode__web_info?.items?.[0];
+                                if (!media) throw new Error('Instagram returned no post media.');
+                                resolve({ type: 'query_id', data: media });
                             }).catch((err) => {
                                 reject(err);
                             })
                         }
                         else {
+                            if (!obj.data?.shortcode_media) throw postRequestError(response, obj);
                             resolve({ type: 'query_hash', data: obj.data });
                         }
                     }
@@ -3903,8 +4104,9 @@
      * @return {Object}
      */
     function getBlobMediaWithQueryID(postPath) {
+        if (!postPath || !/^[\w-]+$/.test(postPath)) return Promise.reject(new Error('Invalid post shortcode.'));
+        if (postRequestsLimited) return Promise.reject(postRequestError({ status: 429 }));
         return new Promise((resolve, reject) => {
-            if (!postPath) reject("NOPATH");
             const postShortCode = postPath;
             const getURL = `https://www.instagram.com/graphql/query/?query_id=9496392173716084&variables={%22shortcode%22:%22${postShortCode}%22,%22__relay_internal__pv__PolarisFeedShareMenurelayprovider%22:true,%22__relay_internal__pv__PolarisIsLoggedInrelayprovider%22:true}`;
 
@@ -3915,18 +4117,23 @@
                     "User-Agent": "Mozilla/5.0 (Linux; Android 10; Pixel 7 XL)Build/RP1A.20845.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/5.0 Chrome/117.0.5938.60 Mobile Safari/537.36 Instagram 307.0.0.34.111",
                     'X-IG-App-ID': getAppID()
                 },
+                timeout: 20000,
+                ontimeout: () => reject(new Error('Post media request timed out. Please try again later.')),
                 onload: function (response) {
                     try {
+                        if (response.status === 429) throw postRequestError(response);
                         let obj = JSON.parse(response.response);
-                        logger(obj);
+                        if (response.status === 429 || obj.feedback_required ||
+                            ['feedback_required', 'rate_limit_error', 'sentry_block'].includes(obj.message)) {
+                            reject(postRequestError(response, obj));
+                            return;
+                        }
 
                         if (obj.status === 'fail') {
-                            alert(`getBlobMediaWithQueryID(): Request failed with API response:\n${obj.message}: ${obj.feedback_message}`);
-                            logger(`Request failed with API response ${obj.message}: ${obj.feedback_message}`);
-                            reject(response);
+                            reject(postRequestError(response, obj));
                         }
                         else {
-                            logger('getBlobMediaWithQueryID()', obj.data);
+                            if (!obj.data) throw postRequestError(response, obj);
                             resolve(obj.data);
                         }
                     }
@@ -5297,7 +5504,7 @@
      */
     function callNotification() {
         const currentVersion = GM_info.script.version;
-        const remoteScriptURL = 'https://raw.githubusercontent.com/SN-Koarashi/ig-helper/refs/heads/master/main.js';
+        const remoteScriptURL = 'https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.meta.js';
 
         GM_xmlhttpRequest({
             method: "GET",
@@ -5321,10 +5528,7 @@
                             image: "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://www.instagram.com&size=64",
                             onclick: (event) => {
                                 event?.preventDefault();
-                                var w = GM_openInTab(GM_info.script.downloadURL);
-                                setTimeout(() => {
-                                    w.close();
-                                }, 250);
+                                GM_openInTab(GM_info.script.downloadURL, { active: true });
                             }
                         });
                     } else {
@@ -6401,7 +6605,7 @@
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
-                url: `https://cdn.jsdelivr.net/gh/SN-Koarashi/ig-helper@master/locale/translations/${lang}.json?v${GM_info.script.version}`,
+                url: `https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/locale/translations/${lang}.json?v${GM_info.script.version}`,
                 onload: function (response) {
                     try {
                         let obj = JSON.parse(response.response);
