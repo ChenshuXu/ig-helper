@@ -17,7 +17,7 @@
 // @name:zh-CN         IG小助手
 // @name:zh-TW         IG小精靈
 // @namespace          https://github.snkms.com/
-// @version            4.2.1.3
+// @version            4.3.5.1
 // @homepageURL        https://github.com/ChenshuXu/ig-helper
 // @updateURL          https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.meta.js
 // @downloadURL        https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.user.js

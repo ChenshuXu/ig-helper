@@ -3,8 +3,8 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(`${__dirname}/../src/utils/api.js`, 'utf8');
-const helper = source.slice(source.indexOf('export function getPageStoryReel'), source.indexOf('/**'))
-    .replace('export function', 'function');
+const helper = source.split('/*! ESLINT IMPORT END !*/')[1]
+    .replaceAll('export async function ', 'async function ').replaceAll('export function ', 'function ');
 let scripts = [];
 const context = vm.createContext({
     document: { querySelector: () => null, querySelectorAll: () => scripts.map(textContent => ({ textContent })) },

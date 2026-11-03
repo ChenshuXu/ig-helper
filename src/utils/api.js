@@ -1,9 +1,10 @@
 import { userIdCache } from "../settings";
-import { logger, getAppID, updateLoadingBar } from "./general";
+import { logger, getAppID, updateLoadingBar, getInstagramRequestContext } from "./general";
 /*! ESLINT IMPORT END !*/
 
 export function getPageStoryReel(identifier) {
-    const matches = reel => /^\d+$/.test(String(reel.id)) && (
+    const matches = reel => String(identifier).startsWith('highlight:') ?
+        String(reel.id) === String(identifier) : /^\d+$/.test(String(reel.id)) && (
         String(reel.id) === String(identifier) ||
         reel.user?.username?.toLowerCase() === String(identifier).toLowerCase()
     );
@@ -69,22 +70,46 @@ export function getPageStoryReel(identifier) {
         reel = null;
     }
     if (!reel) return null;
+    try {
+        return normalizeStoryReel(reel);
+    } catch (err) {
+        logger('getPageStoryReel()', err.message);
+        return null;
+    }
+}
+
+// Keep the existing Story/Highlights contract while accepting upstream's new fields.
+export function normalizeStoryReel(reel) {
+    const user = reel?.user || reel?.owner;
+    if (!user?.username || !Array.isArray(reel?.items) || !reel.items.length) {
+        throw new Error('Instagram returned no Story or Highlight media.');
+    }
     const items = reel.items.map(item => {
-        const images = [...(item.image_versions2?.candidates || [])]
-            .sort((a, b) => b.width - a.width);
-        const videos = [...(item.video_versions || [])]
-            .sort((a, b) => b.width - a.width);
+        const images = (item?.image_versions2?.candidates || item?.display_resources?.map(image => ({
+            url: image.src, width: image.config_width
+        })) || []).filter(image => image?.url).map(image => ({ ...image })).sort((a, b) => b.width - a.width);
+        const videos = (item?.video_versions || item?.video_resources?.map(video => ({
+            url: video.src, width: video.config_width
+        })) || []).filter(video => video?.url).map(video => ({ ...video })).sort((a, b) => b.width - a.width);
+        const mediaType = item?.media_type ?? (item?.is_video || videos.length ? 2 : 1);
+        const id = item?.pk ?? item?.id?.split('_')[0];
+        if (!id || !images.length || ![1, 2].includes(mediaType) || (mediaType === 2 && !videos.length)) {
+            throw new Error('Instagram returned incomplete Story or Highlight media. Refresh the page and try again.');
+        }
         return {
             ...item,
-            id: String(item.pk ?? item.id.split('_')[0]),
-            is_video: item.media_type === 2,
-            taken_at_timestamp: item.taken_at,
-            display_url: images[0]?.url,
+            id: String(id),
+            media_type: mediaType,
+            is_video: mediaType === 2,
+            taken_at_timestamp: item.taken_at_timestamp ?? item.taken_at,
+            image_versions2: { candidates: images },
+            video_versions: mediaType === 2 ? videos : null,
+            display_url: images[0].url,
             display_resources: images.map(image => ({ src: image.url, config_width: image.width })),
             video_resources: videos.map(video => ({ src: video.url, config_width: video.width }))
         };
     });
-    return { ...reel, items };
+    return { ...reel, user: { ...user }, owner: { ...user }, items };
 }
 
 /**
@@ -94,29 +119,22 @@ export function getPageStoryReel(identifier) {
  * @param  {Integer}  highlightId
  * @return {Object}
  */
-export function getHighlightStories(highlightId) {
-    return new Promise((resolve, reject) => {
-        const getURL = `https://www.instagram.com/graphql/query/?query_hash=45246d3fe16ccc6577e0bd297a5db1ab&variables=%7B%22highlight_reel_ids%22:%5B%22${highlightId}%22%5D,%22precomposed_overlay%22:false%7D`;
-
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: getURL,
-            onload: function (response) {
-                try {
-                    let obj = JSON.parse(response.response);
-                    resolve(obj);
-                }
-                catch (err) {
-                    logger('getHighlightStories()', 'reject', err.message);
-                    reject(err);
-                }
-            },
-            onerror: function (err) {
-                logger('getHighlightStories()', 'reject', err);
-                reject(err);
-            }
-        });
+export async function getHighlightStories(highlightId) {
+    if (!/^\d+$/.test(String(highlightId))) throw new Error('Invalid Highlight ID.');
+    const identifier = `highlight:${highlightId}`;
+    const loaded = getPageStoryReel(identifier);
+    if (loaded) return { data: { reels_media: [loaded] } };
+    const data = await requestInstagramGraphQL({
+        friendlyName: 'PolarisStoriesV3HighlightsPageQuery',
+        rootField: 'xdt_api__v1__feed__reels_media__connection',
+        docID: '29299425373007309',
+        variables: { initial_reel_id: identifier, reel_ids: [identifier], first: 999, last: 0,
+            __relay_internal__pv__PolarisCommunityNoteStoriesLabelEnabledrelayprovider: true }
     });
+    const connection = data.xdt_api__v1__feed__reels_media__connection;
+    if (connection?.page_info?.has_next_page) throw new Error('Instagram returned an incomplete Highlight.');
+    const reel = connection?.edges?.map(edge => edge.node).find(node => String(node?.id) === identifier);
+    return { data: { reels_media: [normalizeStoryReel(reel)] } };
 }
 
 /**
@@ -126,32 +144,40 @@ export function getHighlightStories(highlightId) {
  * @param  {Integer}  userId
  * @return {Object}
  */
-export function getStories(userId) {
+export async function getStories(userId) {
+    if (!/^\d+$/.test(String(userId))) throw new Error('Invalid Story user ID.');
     const reel = getPageStoryReel(userId);
-    if (reel) return Promise.resolve({ data: { reels_media: [reel] } });
-    return new Promise((resolve, reject) => {
-        const getURL = `https://www.instagram.com/graphql/query/?query_hash=15463e8449a83d3d60b06be7e90627c7&variables=%7B%22reel_ids%22:%5B%22${userId}%22%5D,%22precomposed_overlay%22:false%7D`;
-
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: getURL,
-            onload: function (response) {
-                try {
-                    let obj = JSON.parse(response.response);
-                    logger('getStories()', obj);
-                    resolve(obj);
-                }
-                catch (err) {
-                    logger('getStories()', 'reject', err.message);
-                    reject(err);
-                }
-            },
-            onerror: function (err) {
-                logger('getStories()', 'reject', err);
-                reject(err);
-            }
-        });
+    if (reel) return { data: { reels_media: [reel] } };
+    const data = await requestInstagramGraphQL({
+        friendlyName: 'PolarisStoriesV3ReelPageStandaloneQuery',
+        rootField: 'xdt_api__v1__feed__reels_media',
+        docID: '29170422829314651',
+        variables: { reel_ids_arr: [String(userId)],
+            __relay_internal__pv__PolarisCommunityNoteStoriesLabelEnabledrelayprovider: true }
     });
+    const result = data.xdt_api__v1__feed__reels_media?.reels_media?.find(item => String(item.id) === String(userId));
+    return { data: { reels_media: [normalizeStoryReel(result)] } };
+}
+
+// Upstream 4.3.5's profile-page fallback, with a bounded request and rate-limit handling.
+export async function getUserIdViaProfileHtml(username) {
+    if (postRequestsLimited) throw postRequestError({ status: 429 });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+        const response = await fetch(`https://www.instagram.com/${encodeURIComponent(username)}/`, {
+            credentials: 'include', headers: { Accept: 'text/html' }, signal: controller.signal
+        });
+        if (!response.ok) throw postRequestError(response);
+        const html = await response.text();
+        const patterns = [/"profile_id":"(\d+)"/, /"page_id":"profilePage_(\d+)"/, /instapp:owner_user_id"\s+content="(\d+)"/];
+        const id = patterns.map(pattern => html.match(pattern)?.[1]).find(Boolean);
+        if (!id) throw new Error('Instagram profile page did not contain a user ID.');
+        const image = html.match(/property="og:image"\s+content="([^"]+)"/)?.[1]?.replaceAll('&amp;', '&') || null;
+        return { user: { id, pk: id, username, profile_pic_url: image } };
+    } finally {
+        clearTimeout(timeout);
+    }
 }
 
 /**
@@ -161,108 +187,42 @@ export function getStories(userId) {
  * @param  {String}  username
  * @return {Promise<Integer>}
  */
-export function getUserId(username) {
+export async function getUserId(username) {
+    if (!username || !/^[\w.]+$/.test(username)) throw new Error('Invalid Instagram username.');
     const reel = getPageStoryReel(username);
-    if (reel?.user) return Promise.resolve({ user: { ...reel.user, pk: reel.id } });
-    return new Promise((resolve, reject) => {
-        if (userIdCache.has(username)) {
-            logger('getUserId()', 'return from cache:', userIdCache.get(username));
-            resolve(userIdCache.get(username));
-            return;
-        }
-
-        let getURL = `https://www.instagram.com/web/search/topsearch/?query=${username}`;
-
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: getURL,
-            onload: function (response) {
+    if (reel?.user) return { user: { ...reel.user, pk: reel.id } };
+    if (userIdCache.has(username)) return userIdCache.get(username);
+    if (postRequestsLimited) throw postRequestError({ status: 429 });
+    let result;
+    try {
+        result = await new Promise((resolve, reject) => GM_xmlhttpRequest({
+            method: 'GET',
+            url: `https://www.instagram.com/web/search/topsearch/?query=${encodeURIComponent(username)}`,
+            timeout: 20000,
+            ontimeout: () => reject(new Error('User lookup timed out.')),
+            onerror: () => reject(new Error('User lookup failed.')),
+            onload(response) {
                 try {
-                    // Fix search issue by Discord: sno_w_
-                    let obj = JSON.parse(response.response);
-                    let result = null;
-                    (obj.users ?? []).forEach(pos => {
-                        if (pos.user.username?.toLowerCase() === username?.toLowerCase()) {
-                            result = pos;
-                        }
-                    });
-
-                    if (result != null) {
-                        logger('getUserId()', result);
-                        userIdCache.set(username, result);
-                        resolve(result);
-                    }
-                    else {
-                        getUserIdWithAgent(username).then((result) => {
-                            userIdCache.set(username, result);
-                            resolve(result);
-                        // eslint-disable-next-line no-unused-vars
-                        }).catch((err) => {
-                            userIdCache.delete(username);
-                            logger('getUserId()', 'fallback reject', err);
-							alert("Cannot find user info from getUserId()\nDetails may be in the console.");
-                            reject(err);
-                        });
-                    }
+                    if (response.status === 429) throw postRequestError(response);
+                    const obj = JSON.parse(response.response);
+                    const error = postRequestError(response, obj);
+                    if (error.code === 'POST_RATE_LIMITED') throw error;
+                    const match = obj.users?.find(entry => entry.user?.username?.toLowerCase() === username.toLowerCase());
+                    resolve(match?.user?.pk || match?.user?.id ? {
+                        user: { ...match.user, pk: match.user.pk ?? match.user.id }
+                    } : null);
                 } catch (err) {
-                    userIdCache.delete(username);
-                    logger('getUserId()', 'parse reject', err);
                     reject(err);
                 }
-            },
-            onerror: function (err) {
-                logger('getUserId()', 'reject', err);
-                userIdCache.delete(username);
-                reject(err);
             }
-        });
-    });
-}
-
-/**
- * getUserIdWithAgent
- * @description Get user's id with username.
- *
- * @param  {String}  username
- * @return {Integer}
- */
-export function getUserIdWithAgent(username) {
-    return new Promise((resolve, reject) => {
-        const getURL = `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
-
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: getURL,
-            headers: {
-                'X-IG-App-ID': getAppID()
-            },
-            onload: function (response) {
-                try {
-                    let obj = JSON.parse(response.response);
-                    let hasUser = obj?.data?.user;
-
-                    if (hasUser != null) {
-                        let userInfo = obj?.data;
-                        userInfo.user.pk = userInfo.user.id;
-                        logger('getUserIdWithAgent()', obj);
-                        resolve(userInfo);
-                    }
-                    else {
-                        logger('getUserIdWithAgent()', 'reject', 'undefined');
-                        reject('undefined');
-                    }
-                }
-                catch (err) {
-                    logger('getUserIdWithAgent()', 'reject', err.message);
-                    reject(err);
-                }
-            },
-            onerror: function (err) {
-                logger('getUserIdWithAgent()', 'reject', err);
-                reject(err);
-            }
-        });
-    });
+        }));
+    } catch (err) {
+        if (err.code === 'POST_RATE_LIMITED') throw err;
+        logger('getUserId()', err.message);
+    }
+    if (!result) result = await getUserIdViaProfileHtml(username);
+    userIdCache.set(username, result);
+    return result;
 }
 
 /**
@@ -342,30 +302,30 @@ export function getPostOwner(postPath) {
     });
 }
 
+function normalizePostMedia(post, shortcode) {
+    if (post?.code !== shortcode || !post.user?.username) return null;
+    const media = post.media_type === 8 ? post.carousel_media : [post];
+    if (!Array.isArray(media) || !media.length ||
+        (post.media_type === 8 && (!post.carousel_media_count || media.length !== post.carousel_media_count))) return null;
+    if (!media.every(item => item?.pk && item.image_versions2?.candidates?.some(image => image?.url) &&
+        (item.media_type === 1 || (item.media_type === 2 && item.video_versions?.some(video => video?.url))))) return null;
+    const normalizeItem = item => ({
+        ...item,
+        taken_at: item.taken_at ?? post.taken_at,
+        image_versions2: { candidates: item.image_versions2.candidates.filter(image => image?.url).map(image => ({ ...image })) },
+        video_versions: item.media_type === 2 ? item.video_versions.filter(video => video?.url)
+            .map(video => ({ ...video })).sort((a, b) => b.width - a.width) : null
+    });
+    return {
+        ...post,
+        user: { ...post.user },
+        owner: { ...post.user },
+        ...(post.media_type === 8 ? { carousel_media: media.map(normalizeItem) } : normalizeItem(post))
+    };
+}
+
 // Read media already fetched by Instagram instead of issuing another GraphQL request.
 export function getPagePostMedia(shortcode) {
-    const normalize = post => {
-        if (post?.code !== shortcode || !post.user?.username) return null;
-        const media = post.media_type === 8 ? post.carousel_media : [post];
-        if (!Array.isArray(media) || !media.length ||
-            (post.media_type === 8 && (!post.carousel_media_count || media.length !== post.carousel_media_count))) return null;
-        if (!media.every(item => item?.pk && item.image_versions2?.candidates?.some(image => image?.url) &&
-            (item.media_type === 1 || (item.media_type === 2 && item.video_versions?.some(video => video?.url))))) return null;
-        const normalizeItem = item => ({
-            ...item,
-            taken_at: item.taken_at ?? post.taken_at,
-            image_versions2: { candidates: item.image_versions2.candidates.filter(image => image?.url).map(image => ({ ...image })) },
-            video_versions: item.media_type === 2 ? item.video_versions.filter(video => video?.url)
-                .map(video => ({ ...video })).sort((a, b) => b.width - a.width) : null
-        });
-        return {
-            ...post,
-            user: { ...post.user },
-            owner: { ...post.user },
-            ...(post.media_type === 8 ? { carousel_media: media.map(normalizeItem) } : normalizeItem(post))
-        };
-    };
-
     const anchors = document.querySelectorAll(`a[href*="/${shortcode}/"], section a[href], main a[href]`);
     const environments = new Set();
     for (const anchor of anchors) {
@@ -389,11 +349,11 @@ export function getPagePostMedia(shortcode) {
                 for (const id of source.getRecordIDs()) {
                     const record = source.get(id);
                     if (record?.code !== shortcode) continue;
-                    const post = normalize({
+                    const post = normalizePostMedia({
                         ...expand(record),
                         user: read(record.user),
                         carousel_media: record.carousel_media ? readList(record.carousel_media).map(expand) : null
-                    });
+                    }, shortcode);
                     if (post) return post;
                 }
             }
@@ -404,7 +364,7 @@ export function getPagePostMedia(shortcode) {
     // Full page loads may also include an unnormalized response in embedded JSON.
     const findPost = value => {
         if (!value || typeof value !== 'object') return null;
-        const post = normalize(value);
+        const post = normalizePostMedia(value, shortcode);
         if (post) return post;
         for (const child of Object.values(value)) {
             const found = findPost(child);
@@ -434,7 +394,7 @@ function postRequestError(response, body) {
         ['feedback_required', 'rate_limit_error', 'sentry_block'].includes(body?.message);
     const error = new Error(limited ?
         'Instagram has temporarily limited media requests. Extra requests are paused for this page; already loaded posts can still be downloaded.' :
-        `Unable to load post media: ${body?.message || `HTTP ${response.status}`}`);
+        `Unable to load post media: ${body?.message || body?.errors?.[0]?.message || `HTTP ${response.status}`}`);
     error.code = limited ? 'POST_RATE_LIMITED' : 'POST_REQUEST_FAILED';
     if (limited) postRequestsLimited = true;
     return error;
@@ -448,110 +408,74 @@ function postRequestError(response, body) {
  * @param  {String}  postPath
  * @return {Object}
  */
-export function getBlobMedia(postPath) {
-    if (!postPath || !/^[\w-]+$/.test(postPath)) return Promise.reject(new Error('Invalid post shortcode.'));
+export async function getBlobMedia(postPath) {
+    if (!postPath || !/^[\w-]+$/.test(postPath)) throw new Error('Invalid post shortcode.');
     const post = getPagePostMedia(postPath);
-    if (post) return Promise.resolve({ type: 'page', data: post });
-    if (postRequestsLimited) return Promise.reject(postRequestError({ status: 429 }));
-    return new Promise((resolve, reject) => {
-        const postShortCode = postPath;
-        const getURL = `https://www.instagram.com/graphql/query/?query_hash=2c4c2e343a8f64c625ba02b2aa12c7f8&variables=%7B%22shortcode%22:%22${postShortCode}%22}`;
+    if (post) return { type: 'page', data: post };
+    const data = await getBlobMediaWithQueryID(postPath);
+    const media = normalizePostMedia(data.xdt_api__v1__media__shortcode__web_info?.items?.[0], postPath);
+    if (!media) throw new Error('Unable to load post media: Instagram returned incomplete media.');
+    return { type: 'query_id', data: media };
+}
 
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: getURL,
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Linux; Android 10; Pixel 7 XL)Build/RP1A.20845.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/5.0 Chrome/117.0.5938.60 Mobile Safari/537.36 Instagram 307.0.0.34.111"
-            },
-            timeout: 20000,
-            ontimeout: () => reject(new Error('Post media request timed out. Please try again later.')),
-            onload: function (response) {
-                try {
-                    if (response.status === 429) throw postRequestError(response);
-                    let obj = JSON.parse(response.response);
-                    if (response.status === 429 || obj.feedback_required ||
-                        ['feedback_required', 'rate_limit_error', 'sentry_block'].includes(obj.message)) {
-                        reject(postRequestError(response, obj));
-                        return;
-                    }
-
-                    if (obj.status === 'fail') {
-                        logger('Request with:', 'getBlobMediaWithQuery()', postShortCode);
-                        getBlobMediaWithQueryID(postShortCode).then((res) => {
-                            const media = res?.xdt_api__v1__media__shortcode__web_info?.items?.[0];
-                            if (!media) throw new Error('Instagram returned no post media.');
-                            resolve({ type: 'query_id', data: media });
-                        }).catch((err) => {
-                            reject(err);
-                        })
-                    }
-                    else {
-                        if (!obj.data?.shortcode_media) throw postRequestError(response, obj);
-                        resolve({ type: 'query_hash', data: obj.data });
-                    }
-                }
-                catch (err) {
-                    logger('getBlobMedia()', 'reject', err.message);
-                    reject(err);
-                }
-            },
-            onerror: function (err) {
-                logger('getBlobMedia()', 'reject', err);
-                reject(err);
-            }
-        });
+export function getBlobMediaWithQueryID(postPath) {
+    if (!postPath || !/^[\w-]+$/.test(postPath)) return Promise.reject(new Error('Invalid post shortcode.'));
+    return requestInstagramGraphQL({
+        friendlyName: 'PolarisPostRootQuery',
+        rootField: 'xdt_api__v1__media__shortcode__web_info',
+        docID: '39422285384081769',
+        variables: { shortcode: postPath,
+            __relay_internal__pv__PolarisShortDramaEnabledrelayprovider: true,
+            __relay_internal__pv__PolarisThreadsStyleCommentsEnabledrelayprovider: false,
+            __relay_internal__pv__PolarisMultiCaptionCarouselEnabledrelayprovider: true }
     });
 }
 
-/**
- * getBlobMediaWithQueryID
- * @description Get list of all media files in post with post shortcode.
- *
- * @param  {String}  postPath
- * @return {Object}
- */
-export function getBlobMediaWithQueryID(postPath) {
-    if (!postPath || !/^[\w-]+$/.test(postPath)) return Promise.reject(new Error('Invalid post shortcode.'));
+// The doc IDs and request fields follow upstream 4.3.5; local media always takes priority.
+function requestInstagramGraphQL({ friendlyName, rootField, docID, variables }) {
     if (postRequestsLimited) return Promise.reject(postRequestError({ status: 429 }));
     return new Promise((resolve, reject) => {
-        const postShortCode = postPath;
-        const getURL = `https://www.instagram.com/graphql/query/?query_id=9496392173716084&variables={%22shortcode%22:%22${postShortCode}%22,%22__relay_internal__pv__PolarisFeedShareMenurelayprovider%22:true,%22__relay_internal__pv__PolarisIsLoggedInrelayprovider%22:true}`;
-
+        const context = getInstagramRequestContext();
+        if (!context.dtsg || !context.lsd) {
+            throw new Error('Instagram request data is unavailable. Refresh Instagram and try again.');
+        }
+        const data = new FormData();
+        const site = context.siteData;
+        const fields = {
+            av: context.userID, fb_api_caller_class: 'RelayModern', fb_api_req_friendly_name: friendlyName,
+            server_timestamps: 'true', doc_id: docID, lsd: context.lsd, fb_dtsg: context.dtsg,
+            __hs: site.haste_session, __hsi: site.hsi, __rev: site.client_revision,
+            __spin_r: site.__spin_r, __spin_b: site.__spin_b, __spin_t: site.__spin_t,
+            __comet_req: site.comet_env, __ccg: 'EXCELLENT', dpr: site.pr,
+            jazoest: '2' + [...context.dtsg].reduce((sum, char) => sum + char.charCodeAt(0), 0),
+            __user: '0', __a: '1', __d: 'www', __req: '1',
+            __crn: friendlyName === 'PolarisPostRootQuery' ? 'comet.igweb.PolarisFeedRoute' : 'comet.igweb.PolarisProfilePostsTabRoute',
+            __s: Array.from({ length: 3 }, () => Math.floor(Math.random() * 2 ** 31).toString(36).padStart(6, '0')).join(':'),
+            variables: JSON.stringify(variables)
+        };
+        for (const [key, value] of Object.entries(fields)) if (value != null) data.append(key, String(value));
         GM_xmlhttpRequest({
-            method: "GET",
-            url: getURL,
+            method: 'POST', url: 'https://www.instagram.com/graphql/query', data,
             headers: {
-                "User-Agent": "Mozilla/5.0 (Linux; Android 10; Pixel 7 XL)Build/RP1A.20845.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/5.0 Chrome/117.0.5938.60 Mobile Safari/537.36 Instagram 307.0.0.34.111",
-                'X-IG-App-ID': getAppID()
+                'X-IG-App-ID': context.appID || '0', 'X-CSRFToken': context.csrfToken,
+                'X-Fb-Friendly-Name': friendlyName, 'X-Fb-Lsd': context.lsd,
+                ...(context.bloksVersion ? { 'X-Bloks-Version-ID': context.bloksVersion } : {}),
+                'X-Root-Field-Name': rootField, 'X-Asbd-ID': '359341'
             },
             timeout: 20000,
-            ontimeout: () => reject(new Error('Post media request timed out. Please try again later.')),
-            onload: function (response) {
+            ontimeout: () => reject(new Error('Media request timed out. Please try again later.')),
+            onerror: () => reject(new Error('Unable to load media. Check your connection and try again.')),
+            onload(response) {
                 try {
                     if (response.status === 429) throw postRequestError(response);
-                    let obj = JSON.parse(response.response);
-                    if (response.status === 429 || obj.feedback_required ||
-                        ['feedback_required', 'rate_limit_error', 'sentry_block'].includes(obj.message)) {
-                        reject(postRequestError(response, obj));
-                        return;
-                    }
-
-                    if (obj.status === 'fail') {
-                        reject(postRequestError(response, obj));
-                    }
-                    else {
-                        if (!obj.data) throw postRequestError(response, obj);
-                        resolve(obj.data);
-                    }
-                }
-                catch (err) {
-                    logger('getBlobMediaWithQueryID()', 'reject', err.message);
+                    const obj = JSON.parse(response.response);
+                    const error = postRequestError(response, obj);
+                    if (error.code === 'POST_RATE_LIMITED' || response.status >= 400 || obj.status === 'fail' || obj.errors?.length) throw error;
+                    if (!obj.data) throw new Error('Instagram returned no media data.');
+                    resolve(obj.data);
+                } catch (err) {
                     reject(err);
                 }
-            },
-            onerror: function (err) {
-                logger('getBlobMediaWithQueryID()', 'reject', err);
-                reject(err);
             }
         });
     });

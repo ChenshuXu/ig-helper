@@ -2,7 +2,45 @@ import { USER_SETTING, state, userIdCache, $body } from "../settings";
 import { _i18n } from "./i18n";
 import { getPostOwner, getMediaInfo, getUserId } from "./api";
 import { getImageFromCache } from "./image_cache";
+import { registerPostClickHandlers } from "../functions/post";
 /*! ESLINT IMPORT END !*/
+
+// Read the same request configuration used by Instagram's frontend (upstream 4.3.5).
+export function getInstagramRequestContext() {
+    const names = new Set(['LSD', 'DTSGInitialData', 'SiteData', 'WebBloksVersioningID']);
+    const config = {};
+    for (const script of document.querySelectorAll('script[type="application/json"][data-sjs]')) {
+        let data;
+        try {
+            data = JSON.parse(script.textContent);
+        } catch (err) {
+            logger('getInstagramRequestContext()', 'invalid page JSON', err.message);
+            continue;
+        }
+        const stack = [data];
+        while (stack.length) {
+            const node = stack.pop();
+            if (!node || typeof node !== 'object') continue;
+            if (Array.isArray(node) && names.has(node[0]) && node[2] && typeof node[2] === 'object') {
+                config[node[0]] = node[2];
+            }
+            stack.push(...Object.values(node));
+        }
+    }
+    const cookie = name => {
+        const value = document.cookie.split('; ').find(part => part.startsWith(`${name}=`));
+        return value ? decodeURIComponent(value.slice(name.length + 1)) : null;
+    };
+    return {
+        appID: getAppID(),
+        lsd: config.LSD?.token,
+        dtsg: config.DTSGInitialData?.token,
+        bloksVersion: config.WebBloksVersioningID?.versioningID,
+        siteData: config.SiteData || {},
+        userID: cookie('ds_user_id') || '0',
+        csrfToken: cookie('csrftoken') || ''
+    };
+}
 
 export function isMacOS() {
     return /Macintosh|Mac OS/i.test(navigator.userAgent);
@@ -1308,7 +1346,7 @@ export function callNotification() {
                 const remoteVersion = match[1];
                 logger('Current version: ', currentVersion, '|', 'Remote version: ', remoteVersion);
 
-                if (remoteVersion !== currentVersion) {
+                if (remoteVersion.localeCompare(currentVersion, undefined, { numeric: true }) > 0) {
                     GM_notification({
                         text: _i18n("NOTICE_UPDATE_CONTENT"),
                         title: _i18n("NOTICE_UPDATE_TITLE"),

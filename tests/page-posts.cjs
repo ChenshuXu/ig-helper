@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const api = fs.readFileSync(`${__dirname}/../src/utils/api.js`, 'utf8')
-    .split('/*! ESLINT IMPORT END !*/')[1].replaceAll('export function ', 'function ');
+    .split('/*! ESLINT IMPORT END !*/')[1].replaceAll('export async function ', 'async function ').replaceAll('export function ', 'function ');
 
 function setup() {
     const records = new Map([
@@ -26,7 +26,8 @@ function setup() {
     let anchors = [anchor], scripts = [], requests = [];
     const context = vm.createContext({
         document: { querySelectorAll: selector => selector.startsWith('script') ? scripts.map(textContent => ({ textContent })) : anchors },
-        logger: () => {}, getAppID: () => 'app',
+        logger: () => {}, getAppID: () => 'app', FormData,
+        getInstagramRequestContext: () => ({dtsg: 'fixture', lsd: 'fixture', siteData: {}, userID: '0', csrfToken: ''}),
         GM_xmlhttpRequest: options => requests.push(options)
     });
     vm.runInContext(api, context);
@@ -72,10 +73,10 @@ function setup() {
     assert.equal(t.requests.length, 1);
 
     const u = setup(); u.setAnchors([]);
-    const fallback = u.context.getBlobMedia('Unknown');
-    u.requests[0].onload({ status: 200, response: JSON.stringify({ status: 'fail', message: 'unsupported query' }) });
-    assert.equal(u.requests.length, 2, 'ordinary legacy-query failures may use fallback');
-    u.requests[1].onload({ status: 200, response: JSON.stringify({ data: { xdt_api__v1__media__shortcode__web_info: { items: [single] } } }) });
+    const fallback = u.context.getBlobMedia('Single');
+    assert.equal(u.requests[0].method, 'POST', 'only the modern POST is used when page data is absent');
+    assert.equal(u.requests[0].data.get('fb_api_req_friendly_name'), 'PolarisPostRootQuery');
+    u.requests[0].onload({ status: 200, response: JSON.stringify({ data: { xdt_api__v1__media__shortcode__web_info: { items: [single] } } }) });
     assert.equal((await fallback).data.code, 'Single');
     const timeout = u.context.getBlobMedia('Timeout');
     u.requests.at(-1).ontimeout();

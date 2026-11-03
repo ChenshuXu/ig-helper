@@ -7,7 +7,7 @@
   "license": "GPLv3",
   "scripts": {
     "build": "node build.js",
-    "test": "node tests/page-stories.cjs && node tests/page-posts.cjs"
+    "test": "node tests/page-stories.cjs && node tests/page-posts.cjs && node tests/upstream-compat.cjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

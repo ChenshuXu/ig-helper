@@ -2,7 +2,7 @@
 
 ## 安装和更新（ChenshuXu fork）
 
-**[安装 / 更新最新版 IG Helper](https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.user.js)** · 当前版本：**4.2.1.3**
+**[安装 / 更新最新版 IG Helper](https://raw.githubusercontent.com/ChenshuXu/ig-helper/master/ig-helper.user.js)** · 当前版本：**4.3.5.1**
 
 1. 在每个浏览器中安装并启用 Tampermonkey。
 2. 打开上面的固定链接，在 Tampermonkey 页面点击“安装”或“更新”。如果浏览器只显示源码，在 Tampermonkey 的“实用工具 → 从 URL 安装”中粘贴同一个链接。
@@ -11,6 +11,12 @@
 这个链接始终指向本 fork 已发布的最新版本，包含原图轮播、Story 和普通帖子下载修复。脚本已配置 `@updateURL` / `@downloadURL`，Tampermonkey 会按各浏览器的更新设置检查此 fork；也可在其管理面板手动“检查更新”，或再次打开安装链接。
 
 本 fork 保留原脚本的名称和 namespace，方便覆盖已有的 IG Helper 并保留设置。如果旧脚本曾手动固定更新地址，请在 Tampermonkey 的脚本设置中确认使用上述 GitHub 地址。只启用一个 `IG Helper`；旧的 `IG Helper Fix - Full Resources` companion 应保持禁用。
+
+### 4.3.5.1 更新
+
+选择性吸收[上游 4.3.5](https://github.com/SN-Koarashi/ig-helper/commit/99e3618b933632549e7818de0352645246f03d8e) 的新 GraphQL 请求、个人主页用户 ID 回退、Story 封面选择、轮播发布日期和封面按钮修复。
+
+保留本 fork 的页面资源优先读取、完整轮播及原图收集；新接口只在页面资源不足时使用，并将响应转换为现有下载格式。请求超时、限流或资源缺失会显示错误，空列表保持禁止批量下载。Highlights 同样使用新版接口。安装和更新链接保持不变。
 
 ### 发布新版本
 

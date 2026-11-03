@@ -8,7 +8,7 @@ import {
     setStoryProgressIndexText,
     setStoryProgressIndexByUsername
 } from "../utils/general";
-import { getUserId, getStories, getMediaInfo, getPageStoryReel } from "../utils/api";
+import { getUserId, getStories, getMediaInfo, getPageStoryReel, normalizeStoryReel } from "../utils/api";
 import { _i18n } from "../utils/i18n";
 import { getImageFromCache } from "../utils/image_cache";
 import { IG_createDM } from "../utils/dialog";
@@ -20,15 +20,24 @@ import { IG_createDM } from "../utils/dialog";
  *
  * @return {void}
  */
+export function showStoryListError(error) {
+    const $body = $('.IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY');
+    $body.empty().append('<p id="_SNLOAD"></p>');
+    $body.find('#_SNLOAD').text(error.message || 'Unable to load Story media. Please try again later.');
+    $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', true);
+    updateLoadingBar(false);
+}
+
 export async function createStoryListDOM(obj, type) {
     try {
-        $('.IG_POPUP_DIG #post_info').text(`${type} ID: ${obj.data.reels_media[0].id}`);
+        const reel = normalizeStoryReel(obj?.data?.reels_media?.[0]);
+        $('.IG_POPUP_DIG #post_info').text(`${type} ID: ${reel.id}`);
         const selector = '.IG_POPUP_DIG .IG_POPUP_DIG_MAIN .IG_POPUP_DIG_BODY';
         // OPTIMIZATION: cache target once
         const $selector = $(selector);
+        $selector.empty();
 
         // OPTIMIZATION: cache reels_media[0] reference
-        const reel = obj.data.reels_media[0];
         const items = reel.items;
 
         items.forEach((item, idx) => {
@@ -68,9 +77,12 @@ export async function createStoryListDOM(obj, type) {
         updatePopupSelectionSummary();
         $('.IG_POPUP_DIG #batch_download_selected, .IG_POPUP_DIG #batch_download_direct').prop('disabled', false);
         updateLoadingBar(false);
+        return items.length;
     }
     catch (err) {
-        console.error('createStoryListDOM()', err);
+        logger('createStoryListDOM()', err.message);
+        showStoryListError(err);
+        return 0;
     }
 }
 
@@ -82,63 +94,73 @@ export async function createStoryListDOM(obj, type) {
  */
 export async function onStoryAll() {
     updateLoadingBar(true);
+    if (!USER_SETTING.DIRECT_DOWNLOAD_STORY) {
+        IG_createDM(false, true);
+        $('.IG_POPUP_DIG .IG_POPUP_DIG_BODY').append('<p id="_SNLOAD"></p>');
+        $('.IG_POPUP_DIG #_SNLOAD').text(_i18n('LOAD_BLOB_MULTIPLE'));
+    }
+    try {
+        let date = new Date().getTime();
+        let timestamp = Math.floor(date / 1000);
+        let username = $("body > div section._ac0a header._ac0k ._ac0l a + div a").first().text() || location.pathname.split("/").filter(s => s.length > 0).at(1);
 
-    let date = new Date().getTime();
-    let timestamp = Math.floor(date / 1000);
-    let username = $("body > div section._ac0a header._ac0k ._ac0l a + div a").first().text() || location.pathname.split("/").filter(s => s.length > 0).at(1);
+        let userInfo = await getUserId(username);
+        let userId = userInfo.user.pk;
+        let stories = await getStories(userId);
 
-    let userInfo = await getUserId(username);
-    let userId = userInfo.user.pk;
-    let stories = await getStories(userId);
+        if (USER_SETTING.DIRECT_DOWNLOAD_STORY) {
+            let complete = 0;
+            // OPTIMIZATION: cache items array — repeatedly accessed inside setTimeout closures
+            const items = stories.data.reels_media[0].items;
+            const totalItems = items.length;
+            setDownloadProgress(complete, totalItems);
 
-    if (USER_SETTING.DIRECT_DOWNLOAD_STORY) {
-        let complete = 0;
-        // OPTIMIZATION: cache items array — repeatedly accessed inside setTimeout closures
-        const items = stories.data.reels_media[0].items;
-        const totalItems = items.length;
-        setDownloadProgress(complete, totalItems);
+            items.forEach((item, idx) => {
+                setTimeout(() => {
+                    if (USER_SETTING.RENAME_PUBLISH_DATE) {
+                        timestamp = item.taken_at_timestamp;
+                    }
 
-        items.forEach((item, idx) => {
-            setTimeout(() => {
-                if (USER_SETTING.RENAME_PUBLISH_DATE) {
-                    timestamp = item.taken_at_timestamp;
-                }
+                    item.display_resources.sort(function (a, b) {
+                        if (a.config_width < b.config_width) return 1;
+                        if (a.config_width > b.config_width) return -1;
+                        return 0;
+                    });
 
-                item.display_resources.sort(function (a, b) {
-                    if (a.config_width < b.config_width) return 1;
-                    if (a.config_width > b.config_width) return -1;
-                    return 0;
-                });
-
-                if (item.is_video) {
-                    saveFiles(item.video_resources[0].src,
-                        {
+                    if (item.is_video) {
+                        saveFiles(item.video_resources[0].src,
+                            {
+                                username,
+                                sourceType: "stories",
+                                timestamp,
+                                filetype: 'mp4',
+                                shortcode: item.id
+                            }).then(() => {
+                                setDownloadProgress(++complete, totalItems);
+                            });
+                    }
+                    else {
+                        saveFiles(item.display_resources[0].src, {
                             username,
                             sourceType: "stories",
                             timestamp,
-                            filetype: 'mp4',
+                            filetype: 'jpg',
                             shortcode: item.id
                         }).then(() => {
                             setDownloadProgress(++complete, totalItems);
                         });
-                }
-                else {
-                    saveFiles(item.display_resources[0].src, {
-                        username,
-                        sourceType: "stories",
-                        timestamp,
-                        filetype: 'jpg',
-                        shortcode: item.id
-                    }).then(() => {
-                        setDownloadProgress(++complete, totalItems);
-                    });
-                }
-            }, 100 * idx);
-        });
-    }
-    else {
-        IG_createDM(false, true);
-        createStoryListDOM(stories, 'stories');
+                    }
+                }, 100 * idx);
+            });
+        }
+        else {
+            await createStoryListDOM(stories, 'stories');
+        }
+    } catch (err) {
+        if (USER_SETTING.DIRECT_DOWNLOAD_STORY) alert(err.message);
+        else showStoryListError(err);
+    } finally {
+        updateLoadingBar(false);
     }
 }
 
@@ -677,6 +699,15 @@ export async function onStoryThumbnail(isDownload, isForce) {
         let targetURL = location.pathname.replace(/\/$/ig, '').split("/").at(-1);
         let videoThumbnailURL = "";
         let mediaId = null;
+        const selectThumbnail = item => {
+            const image = (item?.image_versions2?.candidates || []).filter(candidate => candidate?.url)
+                .reduce((best, candidate) => !best || candidate.width > best.width ? candidate : best, null);
+            videoThumbnailURL = image?.url || item?.display_url || '';
+            if (videoThumbnailURL) {
+                mediaId = item.pk ?? item.id;
+                if (USER_SETTING.RENAME_PUBLISH_DATE) timestamp = item.taken_at_timestamp ?? item.taken_at ?? timestamp;
+            }
+        };
 
         updateLoadingBar(true);
 
@@ -755,9 +786,10 @@ export async function onStoryThumbnail(isDownload, isForce) {
             }
 
             if (result.status === 'ok') {
-                saveFiles(result.items[0].image_versions2.candidates[0].url, {
+                selectThumbnail(result.items[0]);
+                await saveFiles(videoThumbnailURL, {
                     username,
-                    sourceType: "stories",
+                    sourceType: "thumbnail",
                     timestamp,
                     filetype: 'jpg',
                     shortcode: mediaId
@@ -784,11 +816,7 @@ export async function onStoryThumbnail(isDownload, isForce) {
             logger('Fetch from memory cache:', username);
             state.GL_dataCache.stories[username].data.reels_media[0].items.forEach(item => {
                 if (item.id == targetURL) {
-                    videoThumbnailURL = item.display_url;
-                    if (USER_SETTING.RENAME_PUBLISH_DATE) {
-                        timestamp = item.taken_at_timestamp;
-                        mediaId = item.id;
-                    }
+                    selectThumbnail(item);
                 }
             });
 
@@ -807,11 +835,7 @@ export async function onStoryThumbnail(isDownload, isForce) {
 
             items.forEach(item => {
                 if (item.id == targetURL) {
-                    videoThumbnailURL = item.display_url;
-                    if (USER_SETTING.RENAME_PUBLISH_DATE) {
-                        timestamp = item.taken_at_timestamp;
-                        mediaId = item.id;
-                    }
+                    selectThumbnail(item);
                 }
             });
 
@@ -821,11 +845,7 @@ export async function onStoryThumbnail(isDownload, isForce) {
 
                 $header.each(function (index) {
                     if ($(this).children().length > 0) {
-                        videoThumbnailURL = items[index].display_url;
-                        if (USER_SETTING.RENAME_PUBLISH_DATE) {
-                            timestamp = items[index].taken_at_timestamp;
-                            mediaId = items[index].id;
-                        }
+                        selectThumbnail(items[index]);
                     }
                 });
 
@@ -835,11 +855,7 @@ export async function onStoryThumbnail(isDownload, isForce) {
                         const $this = $(this);
                         if ($this.hasClass('x1lix1fw')) {
                             if ($this.children().length > 0) {
-                                videoThumbnailURL = items[index].display_url;
-                                if (USER_SETTING.RENAME_PUBLISH_DATE) {
-                                    timestamp = items[index].taken_at_timestamp;
-                                    mediaId = items[index].id;
-                                }
+                                selectThumbnail(items[index]);
                             }
                         }
                     });
@@ -847,18 +863,18 @@ export async function onStoryThumbnail(isDownload, isForce) {
                     // appear in from home page to story page
                     $('body > div section:visible ._ac0k > ._ac3r > div').each(function (index) {
                         if ($(this).children().hasClass('_ac3q')) {
-                            videoThumbnailURL = items[index].display_url;
-                            if (USER_SETTING.RENAME_PUBLISH_DATE) {
-                                timestamp = items[index].taken_at_timestamp;
-                                mediaId = items[index].id;
-                            }
+                            selectThumbnail(items[index]);
                         }
                     });
                 }
             }
         }
 
-        saveFiles(videoThumbnailURL, {
+        if (!videoThumbnailURL) {
+            updateLoadingBar(false);
+            throw new Error('Cannot find a thumbnail URL for this Story.');
+        }
+        await saveFiles(videoThumbnailURL, {
             username,
             sourceType: "thumbnail",
             timestamp,

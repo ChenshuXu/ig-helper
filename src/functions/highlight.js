@@ -8,7 +8,7 @@ import {
 } from "../utils/general";
 import { _i18n } from "../utils/i18n";
 import { getHighlightStories, getMediaInfo } from "../utils/api";
-import { createStoryListDOM } from "./story";
+import { createStoryListDOM, showStoryListError } from "./story";
 import { getImageFromCache } from "../utils/image_cache";
 import { IG_createDM } from "../utils/dialog";
 /*! ESLINT IMPORT END !*/
@@ -35,87 +35,97 @@ function getHighlightsStoryUsername() {
  */
 export async function onHighlightsStoryAll() {
     updateLoadingBar(true);
+    if (!USER_SETTING.DIRECT_DOWNLOAD_STORY) {
+        IG_createDM(false, true);
+        $('.IG_POPUP_DIG .IG_POPUP_DIG_BODY').append('<p id="_SNLOAD"></p>');
+        $('.IG_POPUP_DIG #_SNLOAD').text(_i18n('LOAD_BLOB_MULTIPLE'));
+    }
+    try {
+        let date = new Date().getTime();
+        let timestamp = Math.floor(date / 1000);
+        let highlightId = location.href.replace(/\/$/ig, '').split('/').at(-1);
+        let highStories = await getHighlightStories(highlightId);
+        let username = highStories.data.reels_media[0].owner.username;
 
-    let date = new Date().getTime();
-    let timestamp = Math.floor(date / 1000);
-    let highlightId = location.href.replace(/\/$/ig, '').split('/').at(-1);
-    let highStories = await getHighlightStories(highlightId);
-    let username = highStories.data.reels_media[0].owner.username;
+        if (USER_SETTING.DIRECT_DOWNLOAD_STORY) {
 
-    if (USER_SETTING.DIRECT_DOWNLOAD_STORY) {
+            let complete = 0;
+            // OPTIMIZATION: Cache items array — accessed inside per-item setTimeout closures,
+            // avoids repeated .reels_media[0].items lookups (was 3 lookups per iteration).
+            const items = highStories.data.reels_media[0].items;
+            const totalItems = items.length;
+            setDownloadProgress(complete, totalItems);
 
-        let complete = 0;
-        // OPTIMIZATION: Cache items array — accessed inside per-item setTimeout closures,
-        // avoids repeated .reels_media[0].items lookups (was 3 lookups per iteration).
-        const items = highStories.data.reels_media[0].items;
-        const totalItems = items.length;
-        setDownloadProgress(complete, totalItems);
+            items.forEach((item, idx) => {
+                setTimeout(() => {
+                    if (USER_SETTING.RENAME_PUBLISH_DATE) {
+                        timestamp = item.taken_at_timestamp;
+                    }
 
-        items.forEach((item, idx) => {
-            setTimeout(() => {
-                if (USER_SETTING.RENAME_PUBLISH_DATE) {
-                    timestamp = item.taken_at_timestamp;
-                }
+                    item.display_resources.sort(function (a, b) {
+                        if (a.config_width < b.config_width) return 1;
+                        if (a.config_width > b.config_width) return -1;
+                        return 0;
+                    });
 
-                item.display_resources.sort(function (a, b) {
-                    if (a.config_width < b.config_width) return 1;
-                    if (a.config_width > b.config_width) return -1;
-                    return 0;
-                });
+                    if (item.is_video) {
+                        (async () => {
+                            if (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && USER_SETTING.PREFER_DASH_MANIFEST && !state.tempFetchRateLimit) {
+                                const mi = await getMediaInfo(item.id);
+                                if (mi?.status === 'ok') {
+                                    const handled = await tryHandleDashFromMediaItem({
+                                        mediaItem: mi.items[0],
+                                        username,
+                                        sourceType: "highlights",
+                                        timestamp,
+                                        shortcode: mi.items[0].id,
+                                        isPreview: false,
+                                    });
+                                    if (handled) {
+                                        setDownloadProgress(++complete, totalItems);
+                                        return;
+                                    }
+                                } else if (USER_SETTING.FALLBACK_TO_BLOB_FETCH_IF_MEDIA_API_THROTTLED) {
+                                    state.tempFetchRateLimit = true;
+                                }
+                            }
 
-                if (item.is_video) {
-                    (async () => {
-                        if (USER_SETTING.FORCE_RESOURCE_VIA_MEDIA && USER_SETTING.PREFER_DASH_MANIFEST && !state.tempFetchRateLimit) {
-                            const mi = await getMediaInfo(item.id);
-                            if (mi?.status === 'ok') {
-                                const handled = await tryHandleDashFromMediaItem({
-                                    mediaItem: mi.items[0],
+                            await saveFiles(
+                                item.video_resources[0].src,
+                                {
                                     username,
                                     sourceType: "highlights",
                                     timestamp,
-                                    shortcode: mi.items[0].id,
-                                    isPreview: false,
-                                });
-                                if (handled) {
-                                    setDownloadProgress(++complete, totalItems);
-                                    return;
+                                    filetype: 'mp4',
+                                    shortcode: item.id
                                 }
-                            } else if (USER_SETTING.FALLBACK_TO_BLOB_FETCH_IF_MEDIA_API_THROTTLED) {
-                                state.tempFetchRateLimit = true;
-                            }
-                        }
-
-                        await saveFiles(
-                            item.video_resources[0].src,
+                            );
+                            setDownloadProgress(++complete, totalItems);
+                        })();
+                    }
+                    else {
+                        saveFiles(item.display_resources[0].src,
                             {
                                 username,
                                 sourceType: "highlights",
                                 timestamp,
-                                filetype: 'mp4',
+                                filetype: 'jpg',
                                 shortcode: item.id
-                            }
-                        );
-                        setDownloadProgress(++complete, totalItems);
-                    })();
-                }
-                else {
-                    saveFiles(item.display_resources[0].src,
-                        {
-                            username,
-                            sourceType: "highlights",
-                            timestamp,
-                            filetype: 'jpg',
-                            shortcode: item.id
-                        }).then(() => {
-                            setDownloadProgress(++complete, totalItems);
-                        });
-                }
-            }, 100 * idx);
-        });
-    }
-    else {
-        IG_createDM(false, true);
-        createStoryListDOM(highStories, 'highlights');
+                            }).then(() => {
+                                setDownloadProgress(++complete, totalItems);
+                            });
+                    }
+                }, 100 * idx);
+            });
+        }
+        else {
+            await createStoryListDOM(highStories, 'highlights');
+        }
+    } catch (err) {
+        if (USER_SETTING.DIRECT_DOWNLOAD_STORY) alert(err.message);
+        else showStoryListError(err);
+    } finally {
+        updateLoadingBar(false);
     }
 }
 
